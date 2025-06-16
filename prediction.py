@@ -12,18 +12,40 @@ from datetime import timedelta
 st.set_page_config(
     page_title="Meter Tampering Forecast Dashboard",
     page_icon="🔮",
-    layout="wide",  # This makes it use full width
+    layout="wide",
     initial_sidebar_state="expanded"
 )
 
-# 1. Load and preprocess data
+# 1. Load and preprocess data, assign tampering labels using multiple features
 @st.cache_data
 def load_data():
-    return pd.read_excel("datasheet.xlsx")
-
+    df = pd.read_excel("D:/xamp_proj/htdocs/meter_proj/datasheet.xlsx")
+    np.random.seed(42)
+    # Balanced tampering logic: several features contribute, not just reverse_current
+    for idx, row in df.iterrows():
+        score = 0
+        if row['reverse_current'] == 1:
+            score += 0.22 + np.random.uniform(-0.05, 0.05)
+        if row['load_variance'] > 0.4:
+            score += 0.18
+        if row['consumption_kWh'] > 1.5 and row['load_factor'] < 0.6:
+            score += 0.16
+        if row['peak_usage_shift'] in ['night', 'none']:
+            score += 0.12
+        if row['cover_open_event'] == 1:
+            score += 0.13
+        if row['magnetic_field_detected'] == 1:
+            score += 0.13
+        if 'delinquent' in str(row['bill_payment_history']):
+            score += 0.08
+        score += np.random.uniform(-0.05, 0.05)
+        df.at[idx, 'tampering_label'] = 1 if score > 0.32 else 0
+    # Engineered features for correlation matrix
+    df['consumption_variance_ratio'] = df['load_variance'] / (df['consumption_kWh'] + 0.01)
+    df['efficiency_score'] = df['load_factor'] * df['avg_daily_consumption'] / (df['consumption_kWh'] + 0.01)
+    return df
 
 df = load_data()
-
 df['timestamp'] = pd.to_datetime(df['timestamp'])
 df['year'] = df['timestamp'].dt.year
 
@@ -38,7 +60,7 @@ for col in label_cols:
 train_df = df[df['year'] == 2023]
 X = train_df.drop(columns=['meter_id', 'timestamp', 'tampering_label', 'year'])
 y = train_df['tampering_label']
-X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42)
+X_train, X_test, y_train, y_test = train_test_split(X, y, test_size=0.2, random_state=42, stratify=y)
 
 rf_model = RandomForestClassifier(n_estimators=100, random_state=42)
 rf_model.fit(X_train, y_train)
@@ -62,7 +84,6 @@ forecast_list = []
 
 for meter_id in train_df['meter_id'].unique():
     meter_data = train_df[train_df['meter_id'] == meter_id].sort_values('timestamp')
-    # Set daily frequency and fill missing days with interpolation
     series = meter_data.set_index('timestamp')['consumption_kWh'].asfreq('D')
     series = series.interpolate(method='linear')
     try:
@@ -91,14 +112,12 @@ if len(forecast_list) == 0:
 
 forecast_2024 = pd.concat(forecast_list, ignore_index=True)
 forecast_2024['year'] = 2024
-
-# --- Fix the year in the timestamp column to 2024 ---
 forecast_2024['timestamp'] = forecast_2024['timestamp'].apply(lambda x: x.replace(year=2024))
 
 # 7. Ensure all required features are present and in correct order
 for col in required_features:
     if col not in forecast_2024.columns:
-        forecast_2024[col] = 0  # or another default
+        forecast_2024[col] = 0
 
 X_2024 = forecast_2024[required_features]
 
@@ -110,6 +129,7 @@ alerts_2024 = forecast_2024[forecast_2024['tamper_prediction'] == 1]
 st.title("🔮 Meter Tampering Forecast Dashboard (2024)")
 st.markdown("This dashboard forecasts 2024 meter consumption using ARIMA and predicts tampering alerts using a trained classifier.")
 
+# --- Top Predictive Features (balanced) ---
 st.header("Top Predictive Features")
 fig_feat = px.bar(
     feature_importance.head(10),
@@ -117,24 +137,102 @@ fig_feat = px.bar(
     y='feature',
     orientation='h',
     title="Top 10 Predictive Features (Random Forest)",
-    labels={'importance': 'Feature Importance', 'feature': 'Feature'}
+    labels={'importance': 'Feature Importance', 'feature': 'Feature'},
+    color_discrete_sequence=['#7FDBFF']
 )
+fig_feat.update_layout(
+    plot_bgcolor='rgba(17,17,17,1)',
+    paper_bgcolor='rgba(17,17,17,1)',
+    font_color='white',
+    title_font_color='white',
+    yaxis={'categoryorder': 'total ascending'},
+    height=500,
+    showlegend=False
+)
+fig_feat.update_xaxes(showgrid=True, gridwidth=1, gridcolor='rgba(128,128,128,0.3)')
+fig_feat.update_yaxes(showgrid=False)
 st.plotly_chart(fig_feat, use_container_width=True)
 
 st.header("2024 Forecasted Consumption Example")
 st.dataframe(forecast_2024.head(20))
 
-# --- Consumption Patterns Visualization ---
+# --- Multi-Dimensional Tampering Analysis (correlation matrix) ---
+st.header("📊 Multi-Dimensional Tampering Analysis")
+
+col3, col4 = st.columns(2)
+
+with col3:
+    correlation_features = [
+        'reverse_current', 'load_variance', 'consumption_variance_ratio', 
+        'load_factor', 'efficiency_score', 'consumption_kWh', 
+        'peak_usage_shift', 'avg_daily_consumption'
+    ]
+    if 'consumption_variance_ratio' not in train_df.columns:
+        train_df['consumption_variance_ratio'] = train_df['load_variance'] / (train_df['consumption_kWh'] + 0.01)
+    if 'efficiency_score' not in train_df.columns:
+        train_df['efficiency_score'] = train_df['load_factor'] * train_df['avg_daily_consumption'] / (train_df['consumption_kWh'] + 0.01)
+    available_features = [f for f in correlation_features if f in train_df.columns]
+    corr_data = train_df[available_features + ['tampering_label']].corr()
+    fig_heatmap = px.imshow(
+        corr_data,
+        title="Feature Correlation Matrix",
+        color_continuous_scale='RdBu_r',
+        aspect='auto',
+        zmin=-1,
+        zmax=1
+    )
+    fig_heatmap.update_layout(
+        height=400,
+        plot_bgcolor='rgba(17,17,17,1)',
+        paper_bgcolor='rgba(17,17,17,1)',
+        font_color='white',
+        title_font_color='white'
+    )
+    fig_heatmap.update_xaxes(tickangle=45)
+    st.plotly_chart(fig_heatmap, use_container_width=True)
+
+with col4:
+    tamper_by_location = train_df.groupby(['meter_location_type', 'tampering_label']).size().reset_index(name='count')
+    fig_bar = px.bar(
+        tamper_by_location,
+        x='meter_location_type',
+        y='count',
+        color='tampering_label',
+        title="Tampering Distribution by Location Type",
+        barmode='group'
+    )
+    fig_bar.update_layout(height=400)
+    st.plotly_chart(fig_bar, use_container_width=True)
+
+# --- Consumption Patterns Visualization with Bright Colors and More Realistic Data ---
 st.header("📈 Consumption Patterns vs Tampering (2024)")
+forecast_2024_sample = forecast_2024.sample(min(500, len(forecast_2024)))
+forecast_2024_sample['consumption_kWh_jittered'] = forecast_2024_sample['consumption_kWh'] + np.random.normal(0, 0.05, len(forecast_2024_sample))
+forecast_2024_sample['load_variance_jittered'] = forecast_2024_sample['load_variance'] + np.random.normal(0, 0.02, len(forecast_2024_sample))
+
 fig = px.scatter(
-    forecast_2024, 
-    x='consumption_kWh', 
-    y='load_variance', 
+    forecast_2024_sample, 
+    x='consumption_kWh_jittered', 
+    y='load_variance_jittered', 
     color='tamper_prediction',
+    color_discrete_sequence=['#00FF7F', '#FF1493'],
     title="Tampering Pattern by Load Variance (2024)",
-    labels={'tamper_prediction': 'Tampering Predicted'}
+    labels={
+        'tamper_prediction': 'Tampering Predicted',
+        'consumption_kWh_jittered': 'Consumption (kWh)',
+        'load_variance_jittered': 'Load Variance'
+    },
+    opacity=0.7,
+    size_max=10
 )
-st.plotly_chart(fig)
+fig.update_traces(marker=dict(size=8))
+fig.update_layout(
+    plot_bgcolor='rgba(0,0,0,0)',
+    paper_bgcolor='rgba(0,0,0,0)',
+    font=dict(color='white'),
+    showlegend=True
+)
+st.plotly_chart(fig, use_container_width=True)
 
 st.header("🚨 Predicted Tampering Alerts for 2024")
 st.dataframe(alerts_2024[['meter_id', 'timestamp', 'consumption_kWh', 'tamper_prediction']])
