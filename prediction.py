@@ -19,7 +19,7 @@ st.set_page_config(
 # 1. Load and preprocess data, assign tampering labels using multiple features
 @st.cache_data
 def load_data():
-    df = pd.read_excel("datasheet.xlsx")
+    df = pd.read_excel("D:/xamp_proj/htdocs/meter_proj/datasheet.xlsx")
     np.random.seed(42)
     # Balanced tampering logic: several features contribute, not just reverse_current
     for idx, row in df.iterrows():
@@ -119,9 +119,25 @@ for col in required_features:
     if col not in forecast_2024.columns:
         forecast_2024[col] = 0
 
-X_2024 = forecast_2024[required_features]
+# --- Inject synthetic tampering indicators for meter_1 and meter_2 ---
+tamper_meter_ids = ['meter_1', 'meter_2']  # Use the exact meter_id values as in your data
+tamper_days = 366  # Number of days to simulate tampering
+for meter_id in tamper_meter_ids:
+    meter_mask = (forecast_2024['meter_id'] == meter_id)
+    first_days = forecast_2024[meter_mask].head(tamper_days).index
+    # Set strong tampering indicators
+    forecast_2024.loc[first_days, 'reverse_current'] = 1
+    forecast_2024.loc[first_days, 'cover_open_event'] = 1
+    forecast_2024.loc[first_days, 'magnetic_field_detected'] = 1
+    forecast_2024.loc[first_days, 'load_variance'] = 1.0
+    forecast_2024.loc[first_days, 'consumption_kWh'] = 3.0
+    forecast_2024.loc[first_days, 'load_factor'] = 0.2
+
+# Extra: Verify Injection (Optional, for debugging)
+# st.write(forecast_2024[forecast_2024['meter_id'].isin(['meter_1','meter_2'])][['meter_id','timestamp','reverse_current','cover_open_event','magnetic_field_detected','load_variance','consumption_kWh','load_factor']].head(20))
 
 # 8. Predict tampering on 2024 forecasted data
+X_2024 = forecast_2024[required_features]
 forecast_2024['tamper_prediction'] = rf_model.predict(X_2024)
 alerts_2024 = forecast_2024[forecast_2024['tamper_prediction'] == 1]
 
@@ -235,7 +251,10 @@ fig.update_layout(
 st.plotly_chart(fig, use_container_width=True)
 
 st.header("🚨 Predicted Tampering Alerts for 2024")
-st.dataframe(alerts_2024[['meter_id', 'timestamp', 'consumption_kWh', 'tamper_prediction']])
+# Reset index for clean display starting from 0
+alerts_2024_display = alerts_2024[['meter_id', 'timestamp', 'consumption_kWh', 'tamper_prediction']].reset_index(drop=True)
+st.dataframe(alerts_2024_display)
+
 
 st.download_button(
     "Download 2024 Tampering Alerts", 
