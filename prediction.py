@@ -19,7 +19,7 @@ st.set_page_config(
 # 1. Load and preprocess data, assign tampering labels using multiple features
 @st.cache_data
 def load_data():
-    df = pd.read_excel("D:/xamp_proj/htdocs/meter_proj/datasheet.xlsx")
+    df = pd.read_excel("datasheet.xlsx")
     np.random.seed(42)
     # Balanced tampering logic: several features contribute, not just reverse_current
     for idx, row in df.iterrows():
